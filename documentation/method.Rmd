@@ -1,0 +1,192 @@
+---
+title: "Method"
+author: "Susan Vanderplas"
+date: "1/25/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, dpi = 300)
+```
+
+
+This is a demonstration of how the process might work by hand. 
+
+## Basic Steps, Illustrated
+
+![](images/demo-orig.png)
+
+### Crop out ruler
+
+![](images/demo-noborder.png)
+
+### Filter out background noise
+
+![](images/demo-threshold.png)
+
+### Clean up the image
+
+![](images/demo-regions.png)
+
+### Separate regions and identify the centers
+
+![](images/demo-centers.png)
+
+### Measure distance from point to point to create a mesh
+
+![](images/demo-measure.png)
+
+Measurement is obviously trickier but I used the ruler tool in GiMP to show the process. 
+
+
+## Basic Algorithm for ECCO shoes
+
+```{r}
+library(imager)
+library(tidyverse)
+
+ims <- list.files("../data/ECCO/", "*.tiff", full.names = T)[c(1, 6, 11, 16)] %>% 
+  purrr::map(load.image) %>%
+  purrr::map(imrotate, angle = 90) %>%
+  as.imlist
+
+plot(ims)
+```
+
+### Crop and Filter
+
+```{r, echo = T}
+
+# Remove EverOS ruler
+crop_everos <- function(im) {
+  # Cut out yellow/red area
+  img_bbox <- im %>%
+    imsplit(axis = "c") %>%
+    (function(x) is.finite((x[[1]] + x[[2]])/x[[3]])) %>%
+    as.cimg() %>%
+    (function(x) x == 1)
+  
+  crop.bbox(im, img_bbox) %>%
+    # convert to grayscale
+    grayscale() %>%
+    # Autocrop each half of the image
+    ImageAlignR::map_halfimg(fun = autocrop) %>%
+    # Crop 5px from each side to clean residual bits up
+    crop.borders(nx = 5, ny = 5) %>%
+    # Crop out extra white space
+    autocrop() %>%
+    # Convert to black and white
+    threshold() %>%
+    # Clean up fuzz (at most 3x3 px)
+    shrink(3) %>%
+    grow(3) %>%
+    # Crop again
+    autocrop()}
+
+```
+
+```{r}
+im_clean <- ims %>%
+  purrr::map(crop_everos) %>%
+  as.imlist()
+
+
+plot(im_clean)
+```
+
+
+### Clean Image
+
+Cleaning the image requires that we have a minimum "interesting" size and shape - this is used to define a filter. Many of these filters work better on an inverted image.
+
+Measuring the dots in the ECCO shoes in an image editing program, we can see that the small dots are ~ 25 px across. Our filter, thus, is a circular matrix with radius 10 pixels - smaller than the small dots we want to keep. 
+
+```{r}
+
+# Convenience function to reverse b/w in an image
+invert_im <- function(im) {
+  1 - im
+}
+
+small_cir <- px.circle(r = 10)
+plot(small_cir, main = "Filter used to clean the image")
+
+clean_image <- function(im, radius = 10) {
+  cir <- px.circle(radius)
+  
+  im %>% 
+    invert_im()  %>%
+    dilate(cir) %>% 
+    erode(cir) %>% 
+    invert_im() %>%
+    dilate(cir) %>%
+    erode(cir)
+}
+
+im_clean2 <- im_clean %>%
+  purrr::map(clean_image) %>%
+  as.imlist()
+
+plot(im_clean2)
+```
+### Check basic shape statistics
+
+```{r}
+
+# compute some basic statistics about length, width, and pct of bounding box filled
+shape_stats <- function(px) {
+  df <- as.data.frame(px)
+  df %>%
+    summarize(npx = n(), 
+              xmed = median(x),
+              ymed = median(y),
+              xspan = diff(range(x)), 
+              yspan = diff(range(y)),
+              bbox = xspan*yspan, 
+              pct_bbox = npx/bbox, pxdf = list(df), px = list(px))
+}
+
+keep_circles <- function(im) {
+  # For each region, compute some basic image statistics to help determine if 
+  # it's the right size and/or shape
+  tmp <- label(im) %>% split_connected() %>% map_df(shape_stats) %>%
+    mutate(suspect = pct_bbox < .7 | xspan > 130 | yspan > 130)
+  # This depends on knowing that the largest circles are ~ 100 px in diameter
+  
+  remove_sm <- filter(tmp, suspect)$px %>% parany
+  im_new <- (invert_im(im) - remove_sm) %>%
+    invert_im()
+  
+  tibble(data = list(tmp), im = list(im_new))
+}
+
+# Have to work only on the smaller data set 
+im_circles <- im_clean2 %>% 
+  map_df(keep_circles) 
+im_circles$im <- as.imlist(im_circles$im)
+
+plot(im_circles$im)
+```
+
+This portion of the algorithm explicitly depends on the size and shape of the dominant feature in the shoe. It would have to be modified to work with e.g. hexagons or rectangles, and would still only work for a regular pattern of the same shape.
+
+As part of the shape filtering, we calculate the center (median) of each shape. This obviously doesn't work properly for concave shapes, but for circles it is just fine. 
+
+### Create mesh from centers
+
+```{r}
+points <- im_circles %>%
+  mutate(shoe = c(1, 6, 11, 16)) %>%
+  select(-im) %>%
+  unnest(data)
+
+library(tripack)
+
+mesh <- points %>% 
+  select(shoe, x = xmed, y = ymed) %>% 
+  nest(data = -shoe) %>%
+  mutate(tri = purrr::map(data, tri.mesh))
+
+par(mfrow = c(2, 2))
+walk(mesh$tri, plot.tri)
+```
