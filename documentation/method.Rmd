@@ -6,7 +6,7 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = F, dpi = 300)
+knitr::opts_chunk$set(echo = F, dpi = 300, cache = T)
 ```
 
 
@@ -41,7 +41,7 @@ Measurement is obviously trickier but I used the ruler tool in GiMP to show the 
 
 ## Basic Algorithm for ECCO shoes
 
-```{r}
+```{r, message = F, warning = F}
 library(imager)
 library(tidyverse)
 
@@ -190,3 +190,86 @@ mesh <- points %>%
 par(mfrow = c(2, 2))
 walk(mesh$tri, plot.tri)
 ```
+
+
+## Results using the ECCO parameters on other shoes
+
+If we use the same set of steps to clean other shoes, however, this doesn't work nearly as well - the filter, which is customized to handle specific pattern elements in the ECCO shoes (and a specific size/resolution of scan image) do not generalize well. 
+
+Here, the 5 pictures show the 5 steps: 
+
+1. Original
+2. Cropping
+3. Cleaning using circle filter
+4. Remove non-circular-ish shapes
+5. Final image
+
+```{r, include = F, eval = F}
+shoe_regions <- function(im, radius=10) {
+  res_steps <- imlist(orig = im)
+  
+  res_steps$cropped <- crop_everos(im)
+  
+  # large structuring element
+  cir <- px.circle(radius)
+  
+  # Try cleaning by cir at first
+  res_steps$clean_sm <- res_steps$cropped %>% 
+    invert_im()  %>%
+    dilate(cir) %>% 
+    erode(cir) %>% 
+    invert_im() %>%
+    dilate(cir) %>%
+    erode(cir)
+  
+  # For each region, compute some basic image statistics to help determine if 
+  # it's the right size and/or shape
+  tmp <- label(res_steps$clean_sm) %>% split_connected() %>% map_df(shape_stats) %>%
+    mutate(suspect = pct_bbox < .7 | xspan > 130 | yspan > 130)
+  
+  res_steps$remove_sm <- filter(tmp, suspect)$px %>% parany
+  
+  res_steps$result <- (invert_im(res_steps$clean_sm) - res_steps$remove_sm) %>%
+    invert_im()
+  
+  mesh <- tri.mesh(tmp$xmed, tmp$ymed)
+  
+  # could compute some similar stats for the large version
+  return(list(steps = res_steps, region_info = tmp, mesh = mesh))
+}
+
+```
+
+
+```{r, include = F, eval = F}
+files <- list.files("../data/OtherPatterns/", "*.tiff", full.names = T)
+
+ims <- map(files, load.image) %>%
+  map(imrotate, angle = 90) %>% 
+  as.imlist()
+res <- map(ims, shoe_regions)
+
+res_df <- tibble(
+  image = ims, 
+  steps = purrr::map(res, "steps"), 
+  region = purrr::map(res, "region_info"),
+  mesh = purrr::map(res, "mesh"), 
+  name = paste0("images/example", 1:length(files), "_results.png"))
+
+plot_shoe_res <- function(res, name) {
+  png(name, width = 5000, height = 15000, units = "px")
+  plot(res, layout = "col")
+  dev.off()
+}
+
+purrr::walk2(res_df$steps, res_df$name, plot_shoe_res)
+```
+
+Squares | Sketchers w/ dots and text | Nike Winflo
+------- | ------- | -------
+![](images/example1_results.png) | ![](images/example2_results.png) | ![](images/example3_results.png)
+
+
+Squares 2 | Teva triangles | Dots + Crosses
+------- | ------- | -------
+![](images/example4_results.png) | ![](images/example5_results.png) | ![](images/example6_results.png)
