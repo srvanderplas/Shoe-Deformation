@@ -7,6 +7,9 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = F, dpi = 300, cache = T)
+
+library(imager)
+library(tidyverse)
 ```
 
 
@@ -42,8 +45,6 @@ Measurement is obviously trickier but I used the ruler tool in GiMP to show the 
 ## Basic Algorithm for ECCO shoes
 
 ```{r, message = F, warning = F}
-library(imager)
-library(tidyverse)
 
 ims <- list.files("../data/ECCO/", "*.tiff", full.names = T)[c(1, 6, 11, 16)] %>% 
   purrr::map(load.image) %>%
@@ -131,7 +132,7 @@ plot(im_clean2)
 ```
 ### Check basic shape statistics
 
-```{r}
+```{r, cache = F}
 
 # compute some basic statistics about length, width, and pct of bounding box filled
 shape_stats <- function(px) {
@@ -174,12 +175,14 @@ As part of the shape filtering, we calculate the center (median) of each shape. 
 
 ### Create mesh from centers
 
-```{r}
+```{r, cache = F}
 points <- im_circles %>%
   mutate(shoe = c(1, 6, 11, 16)) %>%
   select(-im) %>%
   unnest(data)
+```
 
+```{r}
 library(tripack)
 
 mesh <- points %>% 
@@ -273,3 +276,8 @@ Squares | Sketchers w/ dots and text | Nike Winflo
 Squares 2 | Teva triangles | Dots + Crosses
 ------- | ------- | -------
 ![](images/example4_results.png) | ![](images/example5_results.png) | ![](images/example6_results.png)
+
+This exercise produces 2 major insights: 
+
+1. The ECCO parameters are far from universal
+2. The gray backgrounds occur because I haven't handled "islands" within black areas that are big enough to escape cleaning. I should probably handle that better in future code.
